@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -46,11 +47,40 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func handlerValidate_chirp(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"Internal server error"}`))
+		return
+	}
+
+	if len(params.Body) > 140 {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"Chirp is too long"}`))
+		return
+	}
+
+	w.WriteHeader(200)
+	w.Write([]byte(`{"valid":true}`))
+}
+
 func main() {
 	apiCfg := apiConfig{}
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
+	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
+	mux.HandleFunc("POST /api/validate_chirp", handlerValidate_chirp)
+
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, err := w.Write([]byte("OK"))
@@ -58,8 +88,6 @@ func main() {
 			fmt.Println("failed to write the response body: %w", err)
 		}
 	})
-	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
-	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 
 	svr := &http.Server{
 		Handler: mux,
