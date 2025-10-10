@@ -19,10 +19,21 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, err := w.Write([]byte(fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	html := fmt.Sprintf(
+		`<html>
+  			<body>
+   				<h1>Welcome, Chirpy Admin</h1>
+    			<p>Chirpy has been visited %d times!</p>
+  			</body>
+		</html>`,
+		cfg.fileserverHits.Load(),
+	)
+
+	_, err := w.Write([]byte(html))
 	if err != nil {
-		fmt.Println("failed to write the response body: %w", err)
+		fmt.Printf("failed to write the response body: %v\n", err)
 	}
 }
 
@@ -40,15 +51,15 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, err := w.Write([]byte("OK"))
 		if err != nil {
 			fmt.Println("failed to write the response body: %w", err)
 		}
 	})
-	mux.HandleFunc("/metrics", apiCfg.handlerMetrics)
-	mux.HandleFunc("/reset", apiCfg.handlerReset)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 
 	svr := &http.Server{
 		Handler: mux,
