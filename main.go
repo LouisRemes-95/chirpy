@@ -1,19 +1,24 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
 
+	"github.com/LouisRemes-95/chirpy.git/internal/database"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -112,7 +117,22 @@ func cleanMessage(s string) string {
 }
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatalln("failed to load the environment: %w", err)
+	}
+
+	dbUrl := os.Getenv("DB_URL")
+
+	db, err := sql.Open("postgres", dbUrl)
+	if err != nil {
+		log.Fatalln("failed to open database: %w", err)
+	}
+
+	dbQueries := database.New(db)
+
 	apiCfg := apiConfig{}
+	apiCfg.dbQueries = dbQueries
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
@@ -133,7 +153,7 @@ func main() {
 		Addr:    ":8080",
 	}
 
-	err := svr.ListenAndServe()
+	err = svr.ListenAndServe()
 	if err != nil {
 		log.Fatalln("failed to listen and serve: %w", err)
 	}
