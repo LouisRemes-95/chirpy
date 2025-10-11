@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
+
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
@@ -18,6 +22,26 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 		next.ServeHTTP(w, req)
 	})
 }
+
+// Helper functions
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	w.WriteHeader(code)
+	w.Write([]byte(`{"error":"` + msg + `"}`))
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+	w.WriteHeader(code)
+	w.Write(data)
+}
+
+// Handler functions
 
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -57,19 +81,34 @@ func handlerValidate_chirp(w http.ResponseWriter, req *http.Request) {
 	err := decoder.Decode(&params)
 	if err != nil {
 		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(500)
-		w.Write([]byte(`{"error":"Internal server error"}`))
+		respondWithError(w, 500, "Internal server error")
 		return
 	}
 
 	if len(params.Body) > 140 {
-		w.WriteHeader(400)
-		w.Write([]byte(`{"error":"Chirp is too long"}`))
+		respondWithError(w, 400, "Chirp is too long")
 		return
 	}
 
-	w.WriteHeader(200)
-	w.Write([]byte(`{"valid":true}`))
+	type returnVals struct {
+		Body string `json:"cleaned_body"`
+	}
+	respBody := returnVals{
+		Body: cleanMessage(params.Body),
+	}
+
+	respondWithJSON(w, 200, respBody)
+}
+
+func cleanMessage(s string) string {
+	badWords := []string{"kerfuffle", "sharbert", "fornax"}
+	words := strings.Split(s, " ")
+	for i, word := range words {
+		if slices.Contains(badWords, strings.ToLower(word)) {
+			words[i] = "****"
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 func main() {
