@@ -10,15 +10,25 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/LouisRemes-95/chirpy.git/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -32,7 +42,10 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
 	w.WriteHeader(code)
-	w.Write([]byte(`{"error":"` + msg + `"}`))
+	_, err := w.Write([]byte(`{"error":"` + msg + `"}`))
+	if err != nil {
+		log.Printf("Error writing response %s", err)
+	}
 }
 
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
@@ -68,17 +81,84 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
-	cfg.fileserverHits.Store(0)
+
+	if cfg.platform != "dev" {
+		respondWithError(w, 403, "No dev authorisation")
+		return
+	}
+
+	err := cfg.dbQueries.DeleteUsers(req.Context())
+	if err != nil {
+		log.Printf("Error deleting users %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	w.WriteHeader(200)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, err := w.Write([]byte("Reset hits"))
+	_, err = w.Write([]byte("Reset"))
+	if err != nil {
+		log.Printf("Error writing response %s", err)
+		return
+	}
+
+	cfg.fileserverHits.Store(0)
+}
+
+func cleanMessage(s string) string {
+	badWords := []string{"kerfuffle", "sharbert", "fornax"}
+	words := strings.Split(s, " ")
+	for i, word := range words {
+		if slices.Contains(badWords, strings.ToLower(word)) {
+			words[i] = "****"
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+func handlerHealthz(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, err := w.Write([]byte("OK"))
 	if err != nil {
 		fmt.Println("failed to write the response body: %w", err)
 	}
 }
 
-func handlerValidate_chirp(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handlerusers(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	user, err := cfg.dbQueries.CreateUser(req.Context(), params.Email)
+	if err != nil {
+		log.Printf("Error creating user: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	respBody := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	respondWithJSON(w, 201, respBody)
+}
+
+func (cfg *apiConfig) handlerchirps(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		Body   string `json:"body"`
+		UserID string `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
@@ -105,17 +185,6 @@ func handlerValidate_chirp(w http.ResponseWriter, req *http.Request) {
 	respondWithJSON(w, 200, respBody)
 }
 
-func cleanMessage(s string) string {
-	badWords := []string{"kerfuffle", "sharbert", "fornax"}
-	words := strings.Split(s, " ")
-	for i, word := range words {
-		if slices.Contains(badWords, strings.ToLower(word)) {
-			words[i] = "****"
-		}
-	}
-	return strings.Join(words, " ")
-}
-
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -134,19 +203,16 @@ func main() {
 	apiCfg := apiConfig{}
 	apiCfg.dbQueries = dbQueries
 
+	platform := os.Getenv("PLATFORM")
+	apiCfg.platform = platform
+
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidate_chirp)
-
-	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, err := w.Write([]byte("OK"))
-		if err != nil {
-			fmt.Println("failed to write the response body: %w", err)
-		}
-	})
+	mux.HandleFunc("GET /api/healthz", handlerHealthz)
+	mux.HandleFunc("POST /api/users", apiCfg.handlerusers)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerchirps)
 
 	svr := &http.Server{
 		Handler: mux,
