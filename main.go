@@ -18,11 +18,19 @@ import (
 	_ "github.com/lib/pq"
 )
 
-type User struct {
+type user struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+}
+
+type chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 type apiConfig struct {
@@ -61,7 +69,7 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 
 // Handler functions
 
-func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handlerGetMetrics(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	html := fmt.Sprintf(
@@ -80,7 +88,7 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (cfg *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handlerPostReset(w http.ResponseWriter, req *http.Request) {
 
 	if cfg.platform != "dev" {
 		respondWithError(w, 403, "No dev authorisation")
@@ -105,18 +113,7 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
 	cfg.fileserverHits.Store(0)
 }
 
-func cleanMessage(s string) string {
-	badWords := []string{"kerfuffle", "sharbert", "fornax"}
-	words := strings.Split(s, " ")
-	for i, word := range words {
-		if slices.Contains(badWords, strings.ToLower(word)) {
-			words[i] = "****"
-		}
-	}
-	return strings.Join(words, " ")
-}
-
-func handlerHealthz(w http.ResponseWriter, req *http.Request) {
+func handlerGetHealthz(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, err := w.Write([]byte("OK"))
 	if err != nil {
@@ -124,7 +121,7 @@ func handlerHealthz(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (cfg *apiConfig) handlerusers(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handlerPostUser(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
 		Email string `json:"email"`
 	}
@@ -138,27 +135,27 @@ func (cfg *apiConfig) handlerusers(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	user, err := cfg.dbQueries.CreateUser(req.Context(), params.Email)
+	createdUser, err := cfg.dbQueries.CreateUser(req.Context(), params.Email)
 	if err != nil {
 		log.Printf("Error creating user: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
 
-	respBody := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+	respBody := user{
+		ID:        createdUser.ID,
+		CreatedAt: createdUser.CreatedAt,
+		UpdatedAt: createdUser.UpdatedAt,
+		Email:     createdUser.Email,
 	}
 
 	respondWithJSON(w, 201, respBody)
 }
 
-func (cfg *apiConfig) handlerchirps(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Body   string `json:"body"`
-		UserID string `json:"user_id"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
@@ -175,15 +172,67 @@ func (cfg *apiConfig) handlerchirps(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	type returnVals struct {
-		Body string `json:"cleaned_body"`
+	chirpParams := database.CreateChirpParams{
+		Body:   cleanMessage(params.Body),
+		UserID: params.UserID,
 	}
-	respBody := returnVals{
-		Body: cleanMessage(params.Body),
+
+	createdChirp, err := cfg.dbQueries.CreateChirp(req.Context(), chirpParams)
+	if err != nil {
+		log.Printf("Error creating chirp: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	respBody := chirp{
+		ID:        createdChirp.ID,
+		CreatedAt: createdChirp.CreatedAt,
+		UpdatedAt: createdChirp.UpdatedAt,
+		Body:      createdChirp.Body,
+		UserID:    createdChirp.UserID,
+	}
+
+	respondWithJSON(w, 201, respBody)
+}
+
+func cleanMessage(s string) string {
+	badWords := []string{"kerfuffle", "sharbert", "fornax"}
+	words := strings.Split(s, " ")
+	for i, word := range words {
+		if slices.Contains(badWords, strings.ToLower(word)) {
+			words[i] = "****"
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
+	chirps, err := cfg.dbQueries.GetChirps(req.Context())
+	if err != nil {
+		log.Printf("Error getting chirps: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	respBody := make([]chirp, len(chirps))
+	for i, currentChirp := range chirps {
+		respBody[i] = chirp{
+			ID:        currentChirp.ID,
+			CreatedAt: currentChirp.CreatedAt,
+			UpdatedAt: currentChirp.UpdatedAt,
+			Body:      currentChirp.Body,
+			UserID:    currentChirp.UserID,
+		}
 	}
 
 	respondWithJSON(w, 200, respBody)
 }
+
+func (cfg *apiConfig) handlerGetChirpsByID(w http.ResponseWriter, rew *http.Request) {
+
+}
+
+// MAIN
 
 func main() {
 	err := godotenv.Load()
@@ -208,11 +257,13 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
-	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
-	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
-	mux.HandleFunc("GET /api/healthz", handlerHealthz)
-	mux.HandleFunc("POST /api/users", apiCfg.handlerusers)
-	mux.HandleFunc("POST /api/chirps", apiCfg.handlerchirps)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerGetMetrics)
+	mux.HandleFunc("POST /admin/reset", apiCfg.handlerPostReset)
+	mux.HandleFunc("GET /api/healthz", handlerGetHealthz)
+	mux.HandleFunc("POST /api/users", apiCfg.handlerPostUser)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerPostChirp)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpsByID)
 
 	svr := &http.Server{
 		Handler: mux,
