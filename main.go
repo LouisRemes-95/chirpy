@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LouisRemes-95/chirpy.git/internal/auth"
 	"github.com/LouisRemes-95/chirpy.git/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -52,14 +53,14 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	w.WriteHeader(code)
 	_, err := w.Write([]byte(`{"error":"` + msg + `"}`))
 	if err != nil {
-		log.Printf("Error writing response %s", err)
+		log.Printf("failed to write response %s", err)
 	}
 }
 
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("Error marshalling JSON: %s", err)
+		log.Printf("failed to marshal JSON: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
@@ -97,7 +98,7 @@ func (cfg *apiConfig) handlerPostReset(w http.ResponseWriter, req *http.Request)
 
 	err := cfg.dbQueries.DeleteUsers(req.Context())
 	if err != nil {
-		log.Printf("Error deleting users %s", err)
+		log.Printf("failed to delete users %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
@@ -106,7 +107,7 @@ func (cfg *apiConfig) handlerPostReset(w http.ResponseWriter, req *http.Request)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, err = w.Write([]byte("Reset"))
 	if err != nil {
-		log.Printf("Error writing response %s", err)
+		log.Printf("failed to write response %s", err)
 		return
 	}
 
@@ -123,21 +124,34 @@ func handlerGetHealthz(w http.ResponseWriter, req *http.Request) {
 
 func (cfg *apiConfig) handlerPostUser(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
+		log.Printf("failed to decode parameters: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
 
-	createdUser, err := cfg.dbQueries.CreateUser(req.Context(), params.Email)
+	HashedPassword, err := auth.HashPassword(params.Password)
 	if err != nil {
-		log.Printf("Error creating user: %s", err)
+		log.Printf("failed to hash password: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	myParams := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: HashedPassword,
+	}
+
+	createdUser, err := cfg.dbQueries.CreateUser(req.Context(), myParams)
+	if err != nil {
+		log.Printf("failed to create user: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
@@ -162,7 +176,7 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, req *http.Request)
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
+		log.Printf("failed to decode parameters: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
@@ -179,7 +193,7 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, req *http.Request)
 
 	createdChirp, err := cfg.dbQueries.CreateChirp(req.Context(), chirpParams)
 	if err != nil {
-		log.Printf("Error creating chirp: %s", err)
+		log.Printf("failed to create chirp: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
@@ -209,7 +223,7 @@ func cleanMessage(s string) string {
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
 	chirps, err := cfg.dbQueries.GetChirps(req.Context())
 	if err != nil {
-		log.Printf("Error getting chirps: %s", err)
+		log.Printf("failed to get chirps: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
@@ -240,11 +254,11 @@ func (cfg *apiConfig) handlerGetChirpsByID(w http.ResponseWriter, req *http.Requ
 	switch err {
 	case nil:
 	case sql.ErrNoRows:
-		log.Printf("Error chirp Id not found: %s", err)
+		log.Printf("failed to get chirp, Id not found: %s", err)
 		respondWithError(w, 404, "Chirp not found")
 		return
 	default:
-		log.Printf("Error getting chirp: %s", err)
+		log.Printf("failed to get chirp: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
@@ -255,6 +269,45 @@ func (cfg *apiConfig) handlerGetChirpsByID(w http.ResponseWriter, req *http.Requ
 		UpdatedAt: chirpByID.UpdatedAt,
 		Body:      chirpByID.Body,
 		UserID:    chirpByID.UserID,
+	}
+
+	respondWithJSON(w, 200, respBody)
+}
+
+func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("failed to decode parameters: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	returnedUser, err := cfg.dbQueries.GetUsetByEmail(req.Context(), params.Email)
+	if err != nil {
+		log.Printf("failed to get the user by email: %s", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	match, err := auth.CheckPasswordHash(params.Password, returnedUser.HashedPassword)
+	if !match || err != nil {
+		log.Printf("failed to check password: %s", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	respBody := user{
+		ID:        returnedUser.ID,
+		CreatedAt: returnedUser.CreatedAt,
+		UpdatedAt: returnedUser.UpdatedAt,
+		Email:     returnedUser.Email,
 	}
 
 	respondWithJSON(w, 200, respBody)
@@ -292,6 +345,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerPostChirp)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpsByID)
+	mux.HandleFunc("POST /api/login", apiCfg.handlerPostLogin)
 
 	svr := &http.Server{
 		Handler: mux,
