@@ -291,9 +291,8 @@ func (cfg *apiConfig) handlerGetChirpsByID(w http.ResponseWriter, req *http.Requ
 
 func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Password         string `json:"password"`
-		Email            string `json:"email"`
-		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
@@ -305,11 +304,7 @@ func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	if s := params.ExpiresInSeconds; s == 0 || s > 3600 {
-		params.ExpiresInSeconds = 3600
-	}
-
-	returnedUser, err := cfg.dbQueries.GetUsetByEmail(req.Context(), params.Email)
+	returnedUser, err := cfg.dbQueries.GetUserByEmail(req.Context(), params.Email)
 	if err != nil {
 		log.Printf("failed to get the user by email: %v", err)
 		respondWithError(w, 401, "Unauthorized")
@@ -323,26 +318,44 @@ func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	print()
-	token, err := auth.MakeJWT(returnedUser.ID, cfg.secret, time.Duration(params.ExpiresInSeconds)*time.Second)
+	token, err := auth.MakeJWT(returnedUser.ID, cfg.secret, time.Hour)
 	if err != nil {
 		log.Printf("failed to make JWT token: %v", err)
 		respondWithError(w, 500, "Internal server error")
 		return
 	}
 
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		log.Printf("failed to make refresh token: %v", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	_, err = cfg.dbQueries.CreateRefreshToken(req.Context(), database.CreateRefreshTokenParams{
+		Token:  refreshToken,
+		UserID: returnedUser.ID,
+	})
+	if err != nil {
+		log.Printf("failed to create refresh token in database: %v", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
 	respBody := struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-		Token     string    `json:"token"`
+		ID           uuid.UUID `json:"id"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
+		Email        string    `json:"email"`
+		Token        string    `json:"token"`
+		RefreshToken string    `json:"refresh_token"`
 	}{
-		ID:        returnedUser.ID,
-		CreatedAt: returnedUser.CreatedAt,
-		UpdatedAt: returnedUser.UpdatedAt,
-		Email:     returnedUser.Email,
-		Token:     token,
+		ID:           returnedUser.ID,
+		CreatedAt:    returnedUser.CreatedAt,
+		UpdatedAt:    returnedUser.UpdatedAt,
+		Email:        returnedUser.Email,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 
 	respondWithJSON(w, 200, respBody)
