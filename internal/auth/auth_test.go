@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -72,9 +73,9 @@ func TestInCorrectValidateJWT(t *testing.T) {
 	}
 
 	tokenSecret += "andissues"
-	ReturnedID, err := ValidateJWT(tokenString, tokenSecret)
+	_, err = ValidateJWT(tokenString, tokenSecret)
 
-	if ReturnedID == ID || err == nil {
+	if err == nil {
 		t.Errorf(`JWT Validation, but different secret token strings for MakeJWT() and ValidateJWT`)
 	}
 }
@@ -97,5 +98,31 @@ func TestExpiredValidateJWT(t *testing.T) {
 
 	if ReturnedID == ID || err == nil {
 		t.Errorf(`JWT Validation, but should have expired`)
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	headers := http.Header{}
+	headers.Add("Authorization", " Bearer hello world")
+	tokenString, err := GetBearerToken(headers)
+	if tokenString != "hello world" || err != nil {
+		t.Errorf(`Incorrect token string GetBearerToken("Authorization", "Bearer hello world") = %v or failed with error: %v`, tokenString, err)
+	}
+}
+
+func TestGetBearerTokenEmptyValue(t *testing.T) {
+	headers := http.Header{}
+	headers.Add("Authorization", "Bearer ")
+	tokenString, err := GetBearerToken(headers)
+	if err == nil {
+		t.Errorf(`Token string GetBearerToken("Authorization", "Bearer ") = %v, but should fail since token string empty`, tokenString)
+	}
+}
+
+func TestGetBearerTokenEmptyKey(t *testing.T) {
+	headers := http.Header{}
+	tokenString, err := GetBearerToken(headers)
+	if err == nil {
+		t.Errorf(`Token string GetBearerToken("Authorization", "Bearer ") = %v, but should fail since headers empty`, tokenString)
 	}
 }
