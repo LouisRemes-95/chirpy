@@ -361,6 +361,67 @@ func (cfg *apiConfig) handlerPostLogin(w http.ResponseWriter, req *http.Request)
 	respondWithJSON(w, 200, respBody)
 }
 
+func (cfg *apiConfig) handlerPostRefresh(w http.ResponseWriter, req *http.Request) {
+	refreshToken, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		log.Printf("failed to get bearer token: %v", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	returnedRefreshToken, err := cfg.dbQueries.GetRefreshTokenByToken(req.Context(), refreshToken)
+	switch err {
+	case nil:
+	case sql.ErrNoRows:
+		log.Printf("failed to get refresh token, token not found: %s", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	default:
+		log.Printf("failed to get refresh token: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	if returnedRefreshToken.RevokedAt.Valid || returnedRefreshToken.ExpiresAt.Before(time.Now()) {
+		log.Printf("refresh token revoked or expired")
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	tokenString, err := auth.MakeJWT(returnedRefreshToken.UserID, cfg.secret, time.Hour)
+	if err != nil {
+		log.Printf("failed to make JWT token string: %s", err)
+		respondWithError(w, 500, "Internal server error")
+		return
+	}
+
+	respBody := struct {
+		Token string `json:"token"`
+	}{
+		Token: tokenString,
+	}
+
+	respondWithJSON(w, 200, respBody)
+}
+
+func (cfg *apiConfig) handlerPostRevoke(w http.ResponseWriter, req *http.Request) {
+	refreshToken, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		log.Printf("failed to get bearer token: %v", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	err = cfg.dbQueries.RevokeRefreshToken(req.Context(), refreshToken)
+	if err != nil {
+		log.Printf("failed to revoke refresh token: %v", err)
+		respondWithError(w, 500, "No matching refesh token")
+		return
+	}
+
+	w.WriteHeader(204)
+}
+
 // MAIN
 
 func main() {
@@ -393,6 +454,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpsByID)
 	mux.HandleFunc("POST /api/login", apiCfg.handlerPostLogin)
+	mux.HandleFunc("POST /api/refresh", apiCfg.handlerPostRefresh)
+	mux.HandleFunc("POST /api/revoke", apiCfg.handlerPostRevoke)
 
 	svr := &http.Server{
 		Handler: mux,
