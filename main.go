@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -261,6 +262,14 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request)
 		log.Printf("failed to get chirps: %s", err)
 		respondWithError(w, 500, "Internal server error")
 		return
+	}
+
+	sortOrder := req.URL.Query().Get("sort")
+
+	if sortOrder == "desc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
 	}
 
 	respBody := make([]chirp, len(chirps))
