@@ -40,6 +40,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	secret         string
+	polkaKey       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -238,7 +239,24 @@ func cleanMessage(s string) string {
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
-	chirps, err := cfg.dbQueries.GetChirps(req.Context())
+	authorIDString := req.URL.Query().Get("author_id")
+
+	var chirps []database.Chirp
+	var err error
+	if len(authorIDString) == 0 {
+		chirps, err = cfg.dbQueries.GetChirps(req.Context())
+
+	} else {
+		var AuthorID uuid.UUID
+		AuthorID, err = uuid.Parse(authorIDString)
+		if err != nil {
+			log.Printf("failed to parse user ID string to uuid: %s", err)
+			respondWithError(w, 400, "Invalid user ID")
+			return
+		}
+		chirps, err = cfg.dbQueries.GetChirpsByAuthorID(req.Context(), AuthorID)
+	}
+
 	if err != nil {
 		log.Printf("failed to get chirps: %s", err)
 		respondWithError(w, 500, "Internal server error")
@@ -536,6 +554,19 @@ func (cfg *apiConfig) handlerDeleteChirpsByID(w http.ResponseWriter, req *http.R
 }
 
 func (cfg *apiConfig) handlerPostPolkaWebhooks(w http.ResponseWriter, req *http.Request) {
+	apiKey, err := auth.GetAPIKey(req.Header)
+	if err != nil {
+		log.Printf("failed to get api key: %v", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	if apiKey != cfg.polkaKey {
+		log.Printf("Api key doesn't match: %v", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
 	params := struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -543,7 +574,7 @@ func (cfg *apiConfig) handlerPostPolkaWebhooks(w http.ResponseWriter, req *http.
 		} `json:"data"`
 	}{}
 	decoder := json.NewDecoder(req.Body)
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		log.Printf("failed to decode parameters: %s", err)
 		respondWithError(w, 500, "Internal server error")
@@ -598,6 +629,7 @@ func main() {
 	apiCfg.dbQueries = dbQueries
 	apiCfg.platform = os.Getenv("PLATFORM")
 	apiCfg.secret = os.Getenv("secret")
+	apiCfg.polkaKey = os.Getenv("POLKA_KEY")
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
